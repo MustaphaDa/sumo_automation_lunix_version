@@ -1,0 +1,8 @@
+{
+    "cityName": "Grenoble",
+    "gtfsPath": "gtfs_Grenoble.zip",
+    "simDate": "20221110",
+    "transportModes": "bus",
+    "maxJobs": 7,
+    "simsPerValue": 10
+  }
