@@ -37,6 +37,33 @@ docker run --rm -it \
 
 Outputs will be in the `outputs/` directory (mounted from the host).
 
+### Windows quick steps (PowerShell)
+- Prereqs: Install Docker Desktop, enable WSL2 backend (Settings → General), ensure Linux engine.
+- Build image:
+```powershell
+docker build -t sumo-automation:latest .
+```
+- Health check (simple):
+```powershell
+docker run --rm -it --entrypoint python3 sumo-automation:latest -c "import numpy,pandas,shapely,rtree,pyproj; print('ok')"
+```
+- Local smoke run with your `config.json` and `gtfs.zip`:
+```powershell
+docker run --rm -it `
+  -v "${PWD}\config.json:/app/config.json:ro" `
+  -v "${PWD}\gtfs_Grenoble.zip:/data/gtfs.zip:ro" `
+  -v "${PWD}\outputs:/app/outputs" `
+  -e GTFS_PATH="/data/gtfs.zip" `
+  -e MAX_JOBS=2 `
+  -e SIMS_PER_VALUE=1 `
+  sumo-automation:latest
+```
+- Send to HPC (choose ONE approach below, details in sections further down):
+  - Push to a registry (recommended), then run via Apptainer on HPC using `docker://...` (see “Ways to get the image onto the HPC”, Option 1).
+  - Or build a `.sif` on Linux/WSL and `scp` it to HPC (see Option 2).
+  - Or pull `.sif` directly on HPC if allowed (see Option 3).
+  - If compute nodes have no internet, use `OSM_XML_PATH` on HPC (see “OSM download fallback”).
+
 ### Health check (override entrypoint)
 To quickly verify tools inside the image without starting the workflow:
 ```bash
@@ -82,6 +109,59 @@ apptainer run \
   sumo-automation.sif
 ```
 
+### Ways to get the image onto the HPC
+
+- Option 1: Push Docker image to a registry and run directly (HPC converts on-the-fly)
+```bash
+docker tag sumo-automation:latest yourrepo/sumo-automation:latest
+docker login
+docker push yourrepo/sumo-automation:latest
+
+# On HPC (Apptainer pulls and converts transparently):
+apptainer run \
+  --env GTFS_PATH=/data/gtfs.zip \
+  --env MAX_JOBS=16 \
+  --env SIMS_PER_VALUE=10 \
+  --bind /path/config.json:/app/config.json:ro \
+  --bind /path/gtfs.zip:/data/gtfs.zip:ro \
+  --bind /scratch/$USER/outputs:/app/outputs \
+  docker://yourrepo/sumo-automation:latest
+```
+
+- Option 2: Build `.sif` on Linux/WSL and copy via scp
+```bash
+# On Linux/WSL:
+docker build -t sumo-automation:latest .
+sudo apt update && sudo apt install -y apptainer   # if not present
+apptainer build sumo-automation.sif docker-daemon://sumo-automation:latest
+
+# Copy to HPC:
+scp sumo-automation.sif your_user@login.university.edu:~/apps/
+scp config.json your_user@login.university.edu:~/
+scp gtfs_Grenoble.zip your_user@login.university.edu:~/data/
+
+# On HPC:
+module load apptainer
+apptainer run \
+  --env GTFS_PATH=/data/gtfs.zip \
+  --bind ~/config.json:/app/config.json:ro \
+  --bind ~/data/gtfs_Grenoble.zip:/data/gtfs.zip:ro \
+  --bind /scratch/$USER/outputs:/app/outputs \
+  ~/apps/sumo-automation.sif
+```
+
+- Option 3: Pull and save `.sif` directly on the HPC (if internet allowed)
+```bash
+module load apptainer
+apptainer pull sumo-automation.sif docker://yourrepo/sumo-automation:latest
+apptainer run \
+  --env GTFS_PATH=/data/gtfs.zip \
+  --bind /path/config.json:/app/config.json:ro \
+  --bind /path/gtfs.zip:/data/gtfs.zip:ro \
+  --bind /scratch/$USER/outputs:/app/outputs \
+  sumo-automation.sif
+```
+
 ### HPC step-by-step (SSH + scp quick guide)
 
 #### What to get from the university
@@ -99,14 +179,14 @@ apptainer build sumo-automation.sif docker-daemon://sumo-automation:latest
 
 #### Copy files to the HPC (from your computer)
 ```bash
-scp sumo-automation.sif your_user@login.university.edu:~/apps/
-scp config.json your_user@login.university.edu:~/
-scp gtfs_Grenoble.zip your_user@login.university.edu:~/data/
+scp sumo-automation.sif your_user@.......
+scp config.json your_user@.......
+scp gtfs.zip your_user@.....
 ```
 
 #### Log in and verify Apptainer
 ```bash
-ssh your_user@login.university.edu
+ssh your_user@......
 module load apptainer   # or: singularity
 apptainer --version
 apptainer exec ~/apps/sumo-automation.sif bash -lc "sumo --version && python3 -c 'import pandas; print(\"ok\")'"
@@ -160,7 +240,7 @@ apptainer run \
 
 #### Copy results back to your computer
 ```bash
-scp your_user@login.university.edu:/scratch/$USER/outputs/analysis/pt_delay.xlsx .
+scp your_user@.........:/scratch/$USER/outputs/analysis/pt_delay.xlsx .
 ```
 
 ### Notes
