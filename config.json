@@ -1,0 +1,12 @@
+{
+    "cityName": "Grenoble",
+    "gtfsPath": "gtfs_Grenoble.zip",
+    "simDate": "20221110",
+    "transportModes": "bus",
+    "maxJobs": 7,
+    "simsPerValue": 10,
+    "_comment": "Optional time parameters (in seconds): simBegin (default 21600=6AM), simEnd (default 36000=10AM), baselineEnd (default 39600=11AM)",
+    "simBegin": 21600,
+    "simEnd": 36000,
+    "baselineEnd": 36000
+  }

@@ -1,0 +1,35 @@
+# Generated outputs
+outputs/
+*.osm
+private_traffic.od
+od2trips.config.xml
+
+# Data files (too large, user-specific)
+*.zip
+gtfs_*.zip
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Windows-specific scripts (not needed for container)
+Script1.ps1
+keep_awake.py
+
+# Old versions
+sumo_automation_lunix_version/
+plot_delay_comparison.py
+
