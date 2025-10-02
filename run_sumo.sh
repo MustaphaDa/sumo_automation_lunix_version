@@ -118,10 +118,18 @@ load_config() {
     CENTER_X="${CENTER_X:-$(parse_config_json centerX || true)}"
     CENTER_Y="${CENTER_Y:-$(parse_config_json centerY || true)}"
     SIMS_PER_VALUE="${SIMS_PER_VALUE:-$(parse_config_json simsPerValue || true)}"
+    
+    # Time configuration (in seconds for SUMO, will convert for OD matrix)
+    SIM_BEGIN="${SIM_BEGIN:-$(parse_config_json simBegin || true)}"
+    SIM_END="${SIM_END:-$(parse_config_json simEnd || true)}"
+    BASELINE_END="${BASELINE_END:-$(parse_config_json baselineEnd || true)}"
 
     TRANSPORT_MODES=${TRANSPORT_MODES:-bus}
     SIMS_PER_VALUE=${SIMS_PER_VALUE:-10}
     MAX_JOBS=${MAX_JOBS:-$(nproc || echo 2)}
+    SIM_BEGIN=${SIM_BEGIN:-21600}    # default 6:00 AM
+    SIM_END=${SIM_END:-36000}        # default 10:00 AM
+    BASELINE_END=${BASELINE_END:-39600}  # default 11:00 AM for baseline
 
     [[ -n "${CITY_NAME:-}" ]] || die "CITY_NAME is required (env or config.json cityName)"
     [[ -n "${GTFS_PATH:-}" ]] || die "GTFS_PATH is required (env or config.json gtfsPath)"
@@ -130,18 +138,24 @@ load_config() {
 
     GTFS_PATH_ABS="$(readlink -f "$GTFS_PATH")"
     CITY_SAFE="$(sanitize_name "$CITY_NAME")"
+    
+    # Convert seconds to HH.MM format for OD matrix
+    OD_FROM_TIME=$(printf "%02d.%02d" $((SIM_BEGIN / 3600)) $(((SIM_BEGIN % 3600) / 60)))
+    OD_TO_TIME=$(printf "%02d.%02d" $((SIM_END / 3600)) $(((SIM_END % 3600) / 60)))
 
     export CITY_NAME CITY_SAFE GTFS_PATH GTFS_PATH_ABS SIM_DATE TRANSPORT_MODES MAX_JOBS CENTER_X CENTER_Y SIMS_PER_VALUE
+    export SIM_BEGIN SIM_END BASELINE_END OD_FROM_TIME OD_TO_TIME
     log_success "Config loaded: CITY='${CITY_NAME}', DATE=${SIM_DATE}, MODES='${TRANSPORT_MODES}', JOBS=${MAX_JOBS}, SIMS=${SIMS_PER_VALUE}"
+    log_info "Simulation times: BEGIN=${SIM_BEGIN}s (${OD_FROM_TIME}), END=${SIM_END}s (${OD_TO_TIME}), BASELINE_END=${BASELINE_END}s"
 }
 
 create_config_files() {
     log_info "Creating OD template and od2trips config if missing..."
     if [[ ! -f private_traffic.od ]]; then
-        cat > private_traffic.od <<'OD'
-$O;D2
+        cat > private_traffic.od <<OD
+\$O;D2
 *From-Time To-Time
-06.00 10.00
+${OD_FROM_TIME} ${OD_TO_TIME}
 *Factor
 1.00
 *some
@@ -150,7 +164,7 @@ $O;D2
     zone2	zone1	10000	
     zone3	zone1   10000
 OD
-        log_success "private_traffic.od created"
+        log_success "private_traffic.od created with time ${OD_FROM_TIME} to ${OD_TO_TIME}"
     fi
 
     if [[ ! -f od2trips.config.xml ]]; then
@@ -305,6 +319,24 @@ run_simulations() {
     local log_dir="$OUT_SIM/logs"
     mkdir -p "$od_var_dir" "$log_dir"
 
+    # Old method baseline: run once for tripinfo-based analysis
+    local old_method_dir="$OUT_SIM/old_method"
+    mkdir -p "$old_method_dir"
+    local old_tripinfo="$old_method_dir/tripinfo.xml"
+    if [[ -f "$old_tripinfo" ]] && [[ $(stat -c%s "$old_tripinfo") -gt 1000 ]]; then
+        log_warn "Old method baseline tripinfo already exists: $old_tripinfo"
+    else
+        log_info "Running old method baseline (PT-only) for tripinfo..."
+        local old_tmp="$old_tripinfo.tmp"
+        rm -f "$old_tmp"
+        sumo -n "$NET_FILE" --additional "$GTFS_VTYPES,$GTFS_ADD" --routes "$GTFS_ROU" \
+             --begin $SIM_BEGIN --end $SIM_END --seed $base_seed --tripinfo-output "$old_tmp" --ignore-route-errors \
+             --log "$log_dir/old_method_baseline.log" | cat
+        [[ -f "$old_tmp" ]] && [[ $(stat -c%s "$old_tmp") -gt 1000 ]] || die "Old method tripinfo too small"
+        mv -f "$old_tmp" "$old_tripinfo"
+        log_success "Old method baseline tripinfo created: $old_tripinfo"
+    fi
+
     log_info "Creating OD variants..."
     local template
     template="$(cat private_traffic.od)"
@@ -333,7 +365,7 @@ PY
             rm -f "$stop_tmp"
             log_info "[BASELINE] sim=${sim} seed=${seed}"
             sumo -n "$NET_FILE" --additional "$GTFS_VTYPES,$GTFS_ADD" --routes "$GTFS_ROU" \
-                 --begin 21600 --end 39600 --seed "$seed" --stop-output "$stop_tmp" --ignore-route-errors \
+                 --begin $SIM_BEGIN --end $BASELINE_END --seed "$seed" --stop-output "$stop_tmp" --ignore-route-errors \
                  --log "$log_dir/baseline_${sim}.log" | cat
             [[ -f "$stop_tmp" ]] || die "baseline stop missing"
             mv -f "$stop_tmp" "$OUT_SIM/stop_events_baseline_${sim}.xml"
@@ -377,7 +409,7 @@ PY
                 [[ -f "$route_tmp" ]] && [[ $(stat -c%s "$route_tmp") -gt 500 ]] || die "route too small"
                 mv -f "$route_tmp" "$route"
                 sumo -n "$NET_FILE" --additional "$GTFS_VTYPES,$GTFS_ADD" --routes "$GTFS_ROU,$route" \
-                     --begin 21600 --end 36000 --seed "$seed" --tripinfo-output "$sim_tmp" --tripinfo-output.write-unfinished true \
+                     --begin $SIM_BEGIN --end $SIM_END --seed "$seed" --tripinfo-output "$sim_tmp" --tripinfo-output.write-unfinished true \
                      --stop-output "$stop_tmp" --ignore-route-errors --log "$log_dir/sumo_${value}_${sim}.log" | cat
                 [[ -f "$sim_tmp" ]] && [[ $(stat -c%s "$sim_tmp") -gt 1000 ]] || die "sim output too small"
                 mv -f "$sim_tmp" "$sim_file"
@@ -410,6 +442,19 @@ PY
                 --out-box "$out_analysis/pt_delay_box.png" \
                 --out-range "$out_analysis/pt_delay_range.png" || log_warn "Plotting failed"
         fi
+    fi
+
+    # Old method analysis (tripinfo-based)
+    local excel_tripinfo="$out_analysis/pt_delay_tripinfo.xlsx"
+    log_info "Exporting tripinfo-based delay analysis to: $excel_tripinfo"
+    if ! $(get_python_cmd) "$BASE_DIR/get_table_of_old_methode.py" \
+        --baseline "$old_method_dir/tripinfo.xml" \
+        --simdir "$OUT_SIM" \
+        --sims "$SIMS_PER_VALUE" \
+        --out "$excel_tripinfo"; then
+        log_warn "Tripinfo export failed"
+    else
+        log_success "Tripinfo-based Excel generated: $excel_tripinfo"
     fi
 }
 
